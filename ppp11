@@ -1,0 +1,199 @@
+module 3dPrefetcher #(
+    parameter int X_SIZE = 3,
+    parameter int Y_SIZE = 3,
+    parameter int Z_SIZE = 3
+) (
+    input                  clock,
+    input                  reset,
+    input       [31:0]     address_i,   // Input address
+    input                  valid,       // Valid signal for input address
+    output logic [31:0]    address_o,   // Output adjacent address
+    output logic           ready        // Ready signal for output address
+);
+
+    // State enumeration
+    typedef enum logic [1:0] {
+        IDLE,
+        CALC_ADJACENT,
+        OUTPUT_ADJACENT
+    } state_t;
+
+    state_t state, next_state;
+
+    logic [2:0] adjacent_index;
+    logic [31:0] current_address;
+    logic [31:0] adjacent_addresses [5:0];
+    logic [31:0] base_address;
+    logic [31:0] x, y, z;
+
+    // Calculate the x, y, z coordinates from the input address
+    always_comb begin
+        z = address_i / (X_SIZE * Y_SIZE);
+        y = (address_i % (X_SIZE * Y_SIZE)) / X_SIZE;
+        x = address_i % X_SIZE;
+        base_address = address_i - (x + y * X_SIZE + z * X_SIZE * Y_SIZE);
+    end
+
+    // Compute adjacent addresses
+    always_comb begin
+        adjacent_addresses[0] = (x > 0) ? base_address + (x - 1) + y * X_SIZE + z * X_SIZE * Y_SIZE : 32'hx;
+        adjacent_addresses[1] = (x < X_SIZE - 1) ? base_address + (x + 1) + y * X_SIZE + z * X_SIZE * Y_SIZE : 32'hx;
+        adjacent_addresses[2] = (y > 0) ? base_address + x + (y - 1) * X_SIZE + z * X_SIZE * Y_SIZE : 32'hx;
+        adjacent_addresses[3] = (y < Y_SIZE - 1) ? base_address + x + (y + 1) * X_SIZE + z * X_SIZE * Y_SIZE : 32'hx;
+        adjacent_addresses[4] = (z > 0) ? base_address + x + y * X_SIZE + (z - 1) * X_SIZE * Y_SIZE : 32'hx;
+        adjacent_addresses[5] = (z < Z_SIZE - 1) ? base_address + x + y * X_SIZE + (z + 1) * X_SIZE * Y_SIZE : 32'hx;
+    end
+
+    // State machine for prefetcher
+    always_ff @(posedge clock or posedge reset) begin
+        if (reset) begin
+            state <= IDLE;
+            adjacent_index <= 0;
+            address_o <= 32'hx;
+            ready <= 1'b0;
+        end else begin
+            state <= next_state;
+            case (state)
+                IDLE: begin
+                    if (valid) begin
+                        current_address <= address_i;
+                        adjacent_index <= 0;
+                    end
+                end
+
+                CALC_ADJACENT: begin
+                    if (adjacent_addresses[adjacent_index] != 32'hx) begin
+                        address_o <= adjacent_addresses[adjacent_index];
+                        ready <= 1'b1;
+                    end else begin
+                        ready <= 1'b0;
+                    end
+                end
+
+                OUTPUT_ADJACENT: begin
+                    ready <= 1'b0;
+                    adjacent_index <= adjacent_index + 1;
+                end
+            endcase
+        end
+    end
+
+    // Next state logic
+    always_comb begin
+        next_state = state;
+        case (state)
+            IDLE:
+                if (valid) next_state = CALC_ADJACENT;
+            CALC_ADJACENT:
+                next_state = OUTPUT_ADJACENT;
+            OUTPUT_ADJACENT:
+                if (adjacent_index < 6) next_state = CALC_ADJACENT;
+                else next_state = IDLE;
+        endcase
+    end
+
+endmodule
+
+
+module tb_3dPrefetcher;
+
+    // Parameters
+    parameter int X_SIZE = 3;
+    parameter int Y_SIZE = 3;
+    parameter int Z_SIZE = 3;
+
+    // Inputs
+    logic clock;
+    logic reset;
+    logic [31:0] address_i;
+    logic valid;
+
+    // Outputs
+    logic [31:0] address_o;
+    logic ready;
+
+    // Instantiate the Prefetcher
+    3dPrefetcher #(X_SIZE, Y_SIZE, Z_SIZE) uut (
+        .clock(clock),
+        .reset(reset),
+        .address_i(address_i),
+        .valid(valid),
+        .address_o(address_o),
+        .ready(ready)
+    );
+
+    // Clock generation
+    always #5 clock = ~clock;
+
+    // Test procedure
+    initial begin
+        // Initialize inputs
+        clock = 0;
+        reset = 1;
+        valid = 0;
+        address_i = 32'h0;
+
+        // Reset pulse
+        #10 reset = 0;
+
+        // Test case 1: Address in the middle of the grid
+        #10 valid = 1;
+            address_i = 4; // middle of a 3x3x3 grid
+
+        // Wait for all outputs
+        #100;
+
+        // Test case 2: Address at the corner of the grid
+        #10 valid = 1;
+            address_i = 0; // corner of the grid (0,0,0)
+
+        // Wait for all outputs
+        #100;
+
+        // Test case 3: Address at the edge of the grid
+        #10 valid = 1;
+            address_i = 3; // edge of the grid along x-axis (1,0,0)
+
+        // Wait for all outputs
+        #100;
+
+        // Test case 4: Address at another corner of the grid
+        #10 valid = 1;
+            address_i = 26; // corner of the grid (2,2,2)
+
+        // Wait for all outputs
+        #100;
+
+        // Finish the simulation
+        #10 $finish;
+    end
+
+    // Monitor and display results
+    initial begin
+        $monitor("Time: %0t, Input Address: %0d, Output Address: %0d, Ready: %b", $time, address_i, address_o, ready);
+    end
+
+    // Checker to validate output correctness
+    always @(posedge clock) begin
+        if (ready) begin
+            if (address_i == 4) begin
+                // Expected adjacent addresses for input address 4
+                if (address_o != 3 && address_o != 5 && address_o != 1 && address_o != 7 && address_o != 13 && address_o != 10)
+                    $display("ERROR: Incorrect output for address 4.");
+            end else if (address_i == 0) begin
+                // Expected adjacent addresses for input address 0
+                if (address_o != 1 && address_o != 3 && address_o != 9)
+                    $display("ERROR: Incorrect output for address 0.");
+            end else if (address_i == 3) begin
+                // Expected adjacent addresses for input address 3
+                if (address_o != 4 && address_o != 0 && address_o != 12)
+                    $display("ERROR: Incorrect output for address 3.");
+            end else if (address_i == 26) begin
+                // Expected adjacent addresses for input address 26
+                if (address_o != 25 && address_o != 23 && address_o != 17)
+                    $display("ERROR: Incorrect output for address 26.");
+            end
+        end
+    end
+
+endmodule

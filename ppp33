@@ -1,0 +1,202 @@
+module spatial_3d_prefetcher #(
+    parameter s_word = 256,
+    parameter X_SIZE = 3,
+    parameter Y_SIZE = 3,
+    parameter Z_SIZE = 3
+)(
+    input                  clk,
+    input                  rst,
+    input  logic [31:0]    address_i, // Input address
+    input  logic           valid,     // 1 if the input address is valid
+    output logic [31:0]    address_o, // Output address
+    output logic           ready      // 1 if the output address is valid
+);
+
+    // States for the state machine
+    typedef enum logic [1:0] {
+        IDLE, 
+        CALC_ADJACENT, 
+        OUTPUT_ADDR
+    } state_t;
+
+    state_t state, next_state;
+
+    // Internal registers
+    logic [31:0] base_address;
+    logic [2:0]  adj_idx; // Index for adjacent nodes
+    logic [31:0] adjacent_addresses[5:0]; // Maximum 6 adjacent nodes in 3D
+
+    // Calculate the x, y, z coordinates from the input address
+    logic [31:0] x, y, z;
+    assign z = address_i / (X_SIZE * Y_SIZE);
+    assign y = (address_i % (X_SIZE * Y_SIZE)) / X_SIZE;
+    assign x = address_i % X_SIZE;
+
+    // Compute the adjacent nodes' addresses
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            adjacent_addresses[0] <= 32'h0;
+            adjacent_addresses[1] <= 32'h0;
+            adjacent_addresses[2] <= 32'h0;
+            adjacent_addresses[3] <= 32'h0;
+            adjacent_addresses[4] <= 32'h0;
+            adjacent_addresses[5] <= 32'h0;
+        end else if (state == CALC_ADJACENT) begin
+            adj_idx <= 3'd0;
+
+            // Left
+            if (x > 0) 
+                adjacent_addresses[adj_idx++] <= address_i - 1;
+
+            // Right
+            if (x < X_SIZE - 1) 
+                adjacent_addresses[adj_idx++] <= address_i + 1;
+
+            // Down
+            if (y > 0) 
+                adjacent_addresses[adj_idx++] <= address_i - X_SIZE;
+
+            // Up
+            if (y < Y_SIZE - 1) 
+                adjacent_addresses[adj_idx++] <= address_i + X_SIZE;
+
+            // Front
+            if (z > 0) 
+                adjacent_addresses[adj_idx++] <= address_i - (X_SIZE * Y_SIZE);
+
+            // Back
+            if (z < Z_SIZE - 1) 
+                adjacent_addresses[adj_idx++] <= address_i + (X_SIZE * Y_SIZE);
+        end
+    end
+
+    // State machine
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            state <= IDLE;
+        end else begin
+            state <= next_state;
+        end
+    end
+
+    always_comb begin
+        // Default outputs
+        next_state = state;
+        address_o = 32'h0;
+        ready = 1'b0;
+
+        case (state)
+            IDLE: begin
+                if (valid) begin
+                    next_state = CALC_ADJACENT;
+                    base_address = address_i;
+                end
+            end
+            CALC_ADJACENT: begin
+                next_state = OUTPUT_ADDR;
+            end
+            OUTPUT_ADDR: begin
+                if (adj_idx > 0) begin
+                    address_o = adjacent_addresses[adj_idx - 1];
+                    ready = 1'b1;
+                    adj_idx = adj_idx - 1;
+                end else begin
+                    next_state = IDLE;
+                end
+            end
+        endcase
+    end
+endmodule
+
+
+module tb_spatial_3d_prefetcher;
+
+    // Testbench parameters
+    parameter s_word = 256;
+    parameter X_SIZE = 3;
+    parameter Y_SIZE = 3;
+    parameter Z_SIZE = 3;
+
+    // DUT signals
+    logic clk;
+    logic rst;
+    logic [31:0] address_i;
+    logic valid;
+    logic [31:0] address_o;
+    logic ready;
+
+    // Instantiate the DUT (Device Under Test)
+    spatial_3d_prefetcher #(
+        .s_word(s_word),
+        .X_SIZE(X_SIZE),
+        .Y_SIZE(Y_SIZE),
+        .Z_SIZE(Z_SIZE)
+    ) dut (
+        .clk(clk),
+        .rst(rst),
+        .address_i(address_i),
+        .valid(valid),
+        .address_o(address_o),
+        .ready(ready)
+    );
+
+    // Clock generation
+    initial begin
+        clk = 0;
+        forever #5 clk = ~clk;
+    end
+
+    // Test vectors
+    initial begin
+        // Initialize signals
+        rst = 1;
+        valid = 0;
+        address_i = 0;
+
+        // Reset DUT
+        #10 rst = 0;
+
+        // Test 1: Provide a middle node address and check adjacent nodes
+        #10;
+        address_i = 13; // Address for (x=1, y=1, z=1) in a 3x3x3 grid
+        valid = 1;
+        #10 valid = 0;
+
+        // Wait for all adjacent nodes
+        wait (ready);
+        while (ready) begin
+            $display("Adjacent Address: %d", address_o);
+            #10;
+        end
+
+        // Test 2: Provide a corner node address and check adjacent nodes
+        #10;
+        address_i = 0; // Address for (x=0, y=0, z=0) in a 3x3x3 grid
+        valid = 1;
+        #10 valid = 0;
+
+        // Wait for all adjacent nodes
+        wait (ready);
+        while (ready) begin
+            $display("Adjacent Address: %d", address_o);
+            #10;
+        end
+
+        // Test 3: Provide an edge node address and check adjacent nodes
+        #10;
+        address_i = 26; // Address for (x=2, y=2, z=2) in a 3x3x3 grid
+        valid = 1;
+        #10 valid = 0;
+
+        // Wait for all adjacent nodes
+        wait (ready);
+        while (ready) begin
+            $display("Adjacent Address: %d", address_o);
+            #10;
+        end
+
+        // Finish the simulation
+        #10 $finish;
+    end
+endmodule
+
